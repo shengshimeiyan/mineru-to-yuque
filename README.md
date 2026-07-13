@@ -113,6 +113,109 @@ python D:/01/2/latex_to_md.py  # 内置 convert_hjfy_paper()
 - **公式中的 `<`** — 会被语雀 HTML 转义为 `&lt;`，需替换为 `\lt`
 - **Windows 编码** — 子进程使用 `encoding='utf-8', errors='replace'` 避免 GBK 乱码
 
+## 安装到 AI 编程工具
+
+### Codex（OpenAI）
+
+Codex 通过 skill 系统集成，安装后可直接用自然语言触发：
+
+```bash
+# 方式 1：手动安装
+git clone https://github.com/shengshimeiyan/mineru-to-yuque.git ~/.codex/skills/mineru-to-yuque
+
+# 方式 2：使用 skill-installer（Codex 内置）
+# 在 Codex 对话中输入：
+/install-skill https://github.com/shengshimeiyan/mineru-to-yuque
+```
+
+安装后，在 Codex 对话中直接说：
+
+> "翻译这篇论文到语雀：https://aclanthology.org/2024.emnlp-industry.114/"
+
+Codex 会自动调用 skill 执行全流程。
+
+### Claude Code
+
+Claude Code 使用 MCP Server 集成外部工具：
+
+1. 在项目根目录创建 `.mcp.json`（或编辑 `~/.claude/.mcp.json`）：
+
+```json
+{
+  "mcpServers": {
+    "mineru-to-yuque": {
+      "command": "python",
+      "args": ["C:/Users/你/.codex/skills/mineru-to-yuque/scripts/mineru_to_yuque.py"],
+      "env": {
+        "DOTENV_PATH": "C:/Users/你/.env文件的路径/.env"
+      }
+    }
+  }
+}
+```
+
+2. 或者，直接在 `CLAUDE.md` 中添加说明，让 Claude 调用脚本：
+
+```markdown
+## 论文翻译工具
+
+翻译论文到语雀时，运行：
+python ~/.codex/skills/mineru-to-yuque/scripts/mineru_to_yuque.py "<PDF_URL>" --title "标题" --env /path/to/.env
+```
+
+3. 在 Claude Code 对话中使用：
+
+> "帮我翻译这篇论文：https://aclanthology.org/2024.emnlp-industry.114/"
+
+### Cursor
+
+Cursor 通过 MCP Server 或自定义指令集成：
+
+1. 打开 Cursor Settings → Features → Model Context Protocol
+
+2. 添加 MCP Server：
+
+```json
+{
+  "mineru-to-yuque": {
+    "command": "python",
+    "args": ["C:/Users/你/.codex/skills/mineru-to-yuque/scripts/mineru_to_yuque.py"]
+  }
+}
+```
+
+3. 或者在 `.cursorrules` 中添加：
+
+```
+## 论文翻译
+翻译论文到语雀时，运行命令：
+python ~/.codex/skills/mineru-to-yuque/scripts/mineru_to_yuque.py "<PDF_URL>" --title "标题" --env /path/to/.env
+```
+
+4. 在 Cursor Chat 中使用：
+
+> "翻译这篇论文到语雀：https://arxiv.org/pdf/2604.15109"
+
+### 通用方式（任何 AI 工具）
+
+无论什么 AI 编程工具，核心脚本都是独立的 Python 脚本，可以直接调用：
+
+```bash
+# 1. 克隆仓库
+git clone https://github.com/shengshimeiyan/mineru-to-yuque.git
+cd mineru-to-yuque
+
+# 2. 安装依赖
+pip install httpx python-dotenv Pillow
+
+# 3. 配置 .env（见上方"配置"章节）
+
+# 4. 运行
+python scripts/mineru_to_yuque.py "https://aclanthology.org/2024.emnlp-industry.114.pdf" --title "LLM时代的意图检测"
+```
+
+只要能让 AI 工具执行 shell 命令，就能集成此工具。
+
 ## License
 
 MIT
