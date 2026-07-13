@@ -1,0 +1,4 @@
+interface:
+  display_name: "MinerU to Yuque"
+  short_description: "Translate papers (PDF/URL) to Chinese and publish to Yuque"
+  default_prompt: "Translate this paper to Chinese and publish to Yuque: "
