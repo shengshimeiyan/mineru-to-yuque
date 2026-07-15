@@ -322,12 +322,9 @@ def translate_markdown(md: str, cfg: dict, eng_title: str = "") -> str:
     
     def _translate_chunk(idx: int, chunk: str) -> tuple[int, str]:
         """Translate a single chunk. Returns (idx, translated_text)."""
-        # Use previous chunk's original text as context (not waiting for translation)
-        prev_context = chunks[idx - 1][-200:] if idx > 0 else ""
-        if prev_context:
-            user_msg = f"[Context for reference, do NOT translate this part]:\n{prev_context}\n\n[Translate the following]:\n{chunk}"
-        else:
-            user_msg = chunk
+        # No context overlap — it causes heading duplication in parallel mode.
+        # Instead, the system prompt handles coherence.
+        user_msg = chunk
 
         # Retry up to 5 times with increasing timeout and backoff
         for attempt in range(5):
@@ -383,6 +380,30 @@ def translate_markdown(md: str, cfg: dict, eng_title: str = "") -> str:
     result = re.sub(r'^```markdown\s*\n?', '', result, flags=re.MULTILINE)  # remove markdown fences
     result = re.sub(r'\n{3,}', '\n\n', result)          # collapse excessive blank lines
 
+    # Post-process: deduplicate headings caused by chunk overlap in parallel translation
+    # A heading appearing twice within a short span (20 lines) is likely a chunk-boundary duplicate
+    lines = result.split('\n')
+    heading_positions = []  # (line_idx, heading_text)
+    for i, line in enumerate(lines):
+        m = re.match(r'^(#{1,6}\s+.+)$', line)
+        if m:
+            heading_positions.append((i, m.group(1).strip()))
+    
+    # Find duplicate headings within 20 lines of each other
+    dup_indices = set()
+    for i in range(len(heading_positions)):
+        for j in range(i + 1, len(heading_positions)):
+            idx_i, text_i = heading_positions[i]
+            idx_j, text_j = heading_positions[j]
+            if idx_j - idx_i > 20:
+                break  # too far apart, stop checking
+            if text_i == text_j:
+                # Mark the first occurrence for removal (keep the second, which has content after it)
+                dup_indices.add(idx_i)
+                logger.debug("Deduplicating heading at line %d: %s", idx_i, text_i[:40])
+    
+    result = '\n'.join(line for i, line in enumerate(lines) if i not in dup_indices)
+
     # Post-process: fix < and > inside formulas (Yuque HTML-escapes them)
     def _fix_formula_lt_gt(md: str) -> str:
         """Replace < with \\lt and > with \\gt inside $...$ and $$...$$."""
@@ -418,8 +439,11 @@ def translate_markdown(md: str, cfg: dict, eng_title: str = "") -> str:
         _fig_idx[0] += 1
         return f'![图{_fig_idx[0]}]({m.group(1)})'
     result = re.sub(r'!\[\]\(([^)]+)\)', _number_image, result)
-    # Fix subsection headings: ## 2.1 → ### 2.1
+    # Fix subsection headings: MinerU outputs all headings as ## regardless of level
+    # ## X.Y → ### X.Y (subsection)
     result = re.sub(r'^## (\d+\.\d+)', r'### \1', result, flags=re.MULTILINE)
+    # ## X.Y.Z → #### X.Y.Z (sub-subsection)
+    result = re.sub(r'^### (\d+\.\d+\.\d+)', r'#### \1', result, flags=re.MULTILINE)
 
     # Add 2-char indent to paragraph lines (Chinese academic style)
     # Skip: headings, images, formulas, tables, code, empty lines, list items, blockquotes
