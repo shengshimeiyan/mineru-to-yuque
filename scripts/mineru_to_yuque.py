@@ -299,22 +299,50 @@ def translate_markdown(md: str, cfg: dict, eng_title: str = "") -> str:
                     logger.info("Removed References section (%d chars discarded)", len(md) - refs_start)
             break
 
-    # Chunk
+    # Chunk — split at heading boundaries first, then split oversized sections
     max_chunk = 4000
+    min_chunk = 500  # merge small sections back together
+
+    # Step 1: split at ## heading boundaries (keep heading with its content)
+    raw_sections = re.split(r'(?=^## )', main_text, flags=re.MULTILINE)
+    raw_sections = [s for s in raw_sections if s.strip()]
+
+    # Step 2: merge tiny sections with the next one
+    merged = []
+    buf = ""
+    for sec in raw_sections:
+        if not buf:
+            buf = sec
+        elif len(buf) < min_chunk:
+            buf += "\n\n" + sec
+        else:
+            merged.append(buf)
+            buf = sec
+    if buf:
+        merged.append(buf)
+
+    # Step 3: split any section that still exceeds max_chunk at paragraph boundaries
     chunks = []
-    i = 0
-    while i < len(main_text):
-        # Try to break at paragraph boundary
-        end = min(i + max_chunk, len(main_text))
-        if end < len(main_text):
-            # Find last double newline
-            last_break = main_text.rfind('\n\n', i, end)
-            if last_break > i:
-                end = last_break + 2
-        chunks.append(main_text[i:end])
-        i = end
+    for sec in merged:
+        if len(sec) <= max_chunk:
+            chunks.append(sec)
+        else:
+            # Split at \n\n within the section
+            paragraphs = re.split(r'\n\n', sec)
+            sub = ""
+            for para in paragraphs:
+                if sub and len(sub) + len(para) + 2 > max_chunk:
+                    chunks.append(sub)
+                    sub = para
+                else:
+                    sub = (sub + "\n\n" + para) if sub else para
+            if sub:
+                chunks.append(sub)
 
     logger.info("Translating %d chunks...", len(chunks))
+    for i, c in enumerate(chunks):
+        first_line = c.split('\n')[0][:60]
+        logger.debug("  Chunk %d: %d chars — %s", i + 1, len(c), first_line)
 
     # Translate chunks with concurrency for speed
     # Each chunk carries ~200 chars of the PREVIOUS ORIGINAL (not translated) text as context
