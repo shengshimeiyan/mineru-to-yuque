@@ -191,7 +191,7 @@ def download_and_extract(zip_url: str, output_dir: str) -> tuple[str | None, lis
 
 # ── Step 3: Translate ─────────────────────────────────
 
-SYSTEM_PROMPT = """你是一位专业的学术论文翻译专家。将以下英文学术论文的 Markdown 内容翻译成中文。
+SYSTEM_PROMPT = """As an academic expert with specialized knowledge in various fields, please provide a proficient and precise translation from English to Chinese of the academic text enclosed in 🔤. It is crucial to maintain the original phrase or sentence and ensure accuracy while utilizing the appropriate language. Please provide the translated result without any additional explanation and remove 🔤.
 
 严格规则：
 1. 所有 LaTeX 公式（$...$ 和 $$...$$）必须原样保留，不做任何修改
@@ -255,9 +255,9 @@ def translate_markdown(md: str, cfg: dict) -> str:
     translated = []
     for idx, chunk in enumerate(chunks):
         overlap = translated[-1][-200:] if translated else ""
-        user_msg = chunk
+        user_msg = f"🔤 {chunk} 🔤"
         if overlap:
-            user_msg = f"前文末尾：---\n{overlap}\n---\n\n请翻译：\n{chunk}"
+            user_msg = f"前文末尾（仅供上下文参考，不翻译）：---\n{overlap}\n---\n\n请翻译：\n🔤 {chunk} 🔤"
 
         # Retry up to 5 times with increasing timeout and backoff
         text = None
