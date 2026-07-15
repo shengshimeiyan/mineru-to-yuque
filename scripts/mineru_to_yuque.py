@@ -307,6 +307,54 @@ def translate_markdown(md: str, cfg: dict) -> str:
     # Fix subsection headings: ## 2.1 → ### 2.1
     result = re.sub(r'^## (\d+\.\d+)', r'### \1', result, flags=re.MULTILINE)
 
+    # Add 2-char indent to paragraph lines (Chinese academic style)
+    # Skip: headings, images, formulas, tables, code, empty lines, list items, blockquotes
+    indent_skip = re.compile(
+        r'^('
+        r'#{1,6}\s'        # heading
+        r'|>\s?'           # blockquote
+        r'|-\s'            # unordered list (- item)
+        r'|\|\s'           # table row
+        r'|`{3}'           # code fence
+        r'|!\['            # image
+        r'|\$\$'           # block formula
+        r'|\d+\.\s'        # ordered list
+        r'|\*\*图\d+\*\*'  # figure caption: **图1**
+        r'|\*\*表\d+\*\*'  # table caption: **表1**
+        r')'
+    )
+    lines = result.split('\n')
+    in_code_block = False
+    in_table = False
+    indented = []
+    for line in lines:
+        if line.startswith('```'):
+            in_code_block = not in_code_block
+            indented.append(line)
+            continue
+        if in_code_block:
+            indented.append(line)
+            continue
+        # Track HTML/table blocks
+        if line.startswith('<table') or line.startswith('|'):
+            in_table = True
+        if in_table and (line.startswith('</table>') or (not line.startswith('|') and line.strip())):
+            if line.startswith('</table>'):
+                indented.append(line)
+                in_table = False
+                continue
+            in_table = False
+        if in_table:
+            indented.append(line)
+            continue
+        # Skip empty lines and special lines
+        if not line.strip() or indent_skip.match(line):
+            indented.append(line)
+            continue
+        # Regular paragraph line → add indent
+        indented.append('\u3000\u3000' + line)
+    result = '\n'.join(indented)
+
     return result
 
 
