@@ -191,9 +191,73 @@ def download_and_extract(zip_url: str, output_dir: str) -> tuple[str | None, lis
 
 # ── Step 3: Translate ─────────────────────────────────
 
-SYSTEM_PROMPT = """As an academic expert with specialized knowledge in various fields, provide a proficient and precise translation from English to Chinese of the academic text enclosed in 🔤.
+# Standard NLP/AI terminology glossary for consistent translation
+GLOSSARY = {
+    "intent detection": "意图检测",
+    "intent classification": "意图分类",
+    "intent": "意图",
+    "dialogue system": "对话系统",
+    "dialog system": "对话系统",
+    "natural language understanding": "自然语言理解",
+    "NLU": "自然语言理解（NLU）",
+    "out-of-scope": "域外",
+    "OOS": "域外（OOS）",
+    "out-of-domain": "域外",
+    "OOD": "域外（OOD）",
+    "large language model": "大语言模型",
+    "LLM": "大语言模型（LLM）",
+    "fine-tuning": "微调",
+    "fine-tuned": "微调的",
+    "pre-trained": "预训练的",
+    "pre-training": "预训练",
+    "in-context learning": "上下文学习",
+    "ICL": "上下文学习（ICL）",
+    "prompt": "提示",
+    "prompting": "提示",
+    "few-shot": "少样本",
+    "zero-shot": "零样本",
+    "multi-turn": "多轮",
+    "single-turn": "单轮",
+    "semantic": "语义",
+    "embedding": "嵌入",
+    "token": "词元",
+    "tokenization": "分词",
+    "transformer": "Transformer",
+    "attention mechanism": "注意力机制",
+    "self-attention": "自注意力",
+    "cross-attention": "交叉注意力",
+    "knowledge distillation": "知识蒸馏",
+    "data augmentation": "数据增强",
+    "ablation study": "消融实验",
+    "baseline": "基线",
+    "state-of-the-art": "最先进的",
+    "SOTA": "最先进（SOTA）",
+    "benchmark": "基准测试",
+    "downstream task": "下游任务",
+    "overfitting": "过拟合",
+    "underfitting": "欠拟合",
+    "generalization": "泛化",
+    "inference": "推理",
+    "entropy": "熵",
+    "uncertainty": "不确定性",
+    "calibration": "校准",
+    "retrieval-augmented generation": "检索增强生成",
+    "RAG": "检索增强生成（RAG）",
+    "hallucination": "幻觉",
+    "chain-of-thought": "思维链",
+    "CoT": "思维链（CoT）",
+    "reinforcement learning": "强化学习",
+    "RLHF": "基于人类反馈的强化学习（RLHF）",
+}
+
+GLOSSARY_PROMPT = "\n".join(f"- {k} → {v}" for k, v in GLOSSARY.items())
+
+SYSTEM_PROMPT = f"""As an academic expert with specialized knowledge in various fields, provide a proficient and precise translation from English to Chinese of the academic text enclosed in 🔤.
 
 Translate for fluency and accuracy in Chinese academic writing style, not word-by-word. Preserve all technical terms with their first occurrence annotated as: 中文术语（English Term）.
+
+Key terminology glossary (MUST follow these translations):
+{GLOSSARY_PROMPT}
 
 严格规则：
 1. 所有 LaTeX 公式（$...$ 和 $$...$$）必须原样保留，不做任何修改
@@ -207,7 +271,7 @@ Translate for fluency and accuracy in Chinese academic writing style, not word-b
 9. Figure X: → **图X**，Table X: → **表X**"""
 
 
-def translate_markdown(md: str, cfg: dict) -> str:
+def translate_markdown(md: str, cfg: dict, eng_title: str = "") -> str:
     """Translate Markdown to Chinese via GLM. References are removed, Appendix is translated."""
     # Remove References section but keep Appendix (which may follow References)
     main_text = md
@@ -253,15 +317,19 @@ def translate_markdown(md: str, cfg: dict) -> str:
 
     logger.info("Translating %d chunks...", len(chunks))
 
-    translated = []
-    for idx, chunk in enumerate(chunks):
-        overlap = translated[-1][-200:] if translated else ""
+    # Translate chunks with concurrency for speed
+    # Each chunk carries ~200 chars of the PREVIOUS ORIGINAL (not translated) text as context
+    max_concurrent = min(4, len(chunks))  # up to 4 parallel requests
+    
+    def _translate_chunk(idx: int, chunk: str) -> tuple[int, str]:
+        """Translate a single chunk. Returns (idx, translated_text)."""
+        # Use previous chunk's original text as context (not waiting for translation)
+        prev_context = chunks[idx - 1][-200:] if idx > 0 else ""
         user_msg = f"🔤 {chunk} 🔤"
-        if overlap:
-            user_msg = f"前文末尾（仅供上下文参考，不翻译）：---\n{overlap}\n---\n\n请翻译：\n🔤 {chunk} 🔤"
+        if prev_context:
+            user_msg = f"前文末尾（仅供上下文参考，不翻译）：---\n{prev_context}\n---\n\n请翻译：\n🔤 {chunk} 🔤"
 
         # Retry up to 5 times with increasing timeout and backoff
-        text = None
         for attempt in range(5):
             timeout = 120 + attempt * 60  # 120s, 180s, 240s, 300s, 360s
             try:
@@ -288,22 +356,63 @@ def translate_markdown(md: str, cfg: dict) -> str:
                 resp.raise_for_status()
                 result = resp.json()
                 text = result["choices"][0]["message"]["content"]
-                break
+                return (idx, text)
             except (httpx.ReadTimeout, httpx.ConnectTimeout) as e:
                 logger.warning("  Chunk %d attempt %d timed out (%ds): %s", idx + 1, attempt + 1, timeout, e)
                 if attempt == 4:
                     raise
                 import time; time.sleep(10)
                 logger.info("  Retrying...")
+        raise RuntimeError(f"Chunk {idx + 1} failed after 5 attempts")
 
-        translated.append(text)
-        logger.info("  Chunk %d/%d done (%d chars)", idx + 1, len(chunks), len(text))
+    # Use ThreadPoolExecutor for parallel translation
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    translated = [None] * len(chunks)
+    with ThreadPoolExecutor(max_workers=max_concurrent) as executor:
+        futures = {executor.submit(_translate_chunk, idx, chunk): idx for idx, chunk in enumerate(chunks)}
+        for future in as_completed(futures):
+            idx, text = future.result()
+            translated[idx] = text
+            logger.info("  Chunk %d/%d done (%d chars)", idx + 1, len(chunks), len(text))
 
     result = "\n\n".join(translated)
+
+    # Post-process: fix < and > inside formulas (Yuque HTML-escapes them)
+    def _fix_formula_lt_gt(md: str) -> str:
+        """Replace < with \\lt and > with \\gt inside $...$ and $$...$$."""
+        def replace_in_formula(m):
+            text = m.group(0)
+            text = text.replace('<', r'\lt ')
+            text = text.replace('>', r'\gt ')
+            return text
+        # Process $$...$$ first (greedy), then $...$
+        md = re.sub(r'\$\$(.+?)\$\$', replace_in_formula, md, flags=re.DOTALL)
+        md = re.sub(r'\$(.+?)\$', replace_in_formula, md)
+        return md
+    result = _fix_formula_lt_gt(result)
+
+    # Post-process: clean up LaTeX residuals
+    latex_residuals = [
+        (r'\[leftmargin[=\*\d\.\,\s]+\]', ''),        # [leftmargin=*]
+        (r'\\bibliography\{[^}]*\}', ''),               # \bibliography{...}
+        (r'\\appendix\b', ''),                           # \appendix
+        (r'\\section\*\{([^}]*)\}', r'## \1'),          # \section*{附录} → ## 附录
+        (r'\\subsection\*\{([^}]*)\}', r'### \1'),      # \subsection*{...}
+    ]
+    for pattern, repl in latex_residuals:
+        result = re.sub(pattern, repl, result)
 
     # Post-process: figure/table numbering
     result = re.sub(r'Figure (\d+):', r'**图\1**', result)
     result = re.sub(r'Table (\d+[a-z]?):', r'**表\1**', result)
+
+    # Add sequential alt text to images: ![](url) → ![图N](url)
+    _fig_idx = [0]
+    def _number_image(m):
+        _fig_idx[0] += 1
+        return f'![图{_fig_idx[0]}]({m.group(2)})'
+    result = re.sub(r'!\[\]\(([^)]+)\)', r'![](\1)', result)  # normalize first
+    result = re.sub(r'!\[\]\(([^)]+)\)', _number_image, result)
     # Fix subsection headings: ## 2.1 → ### 2.1
     result = re.sub(r'^## (\d+\.\d+)', r'### \1', result, flags=re.MULTILINE)
 
@@ -354,6 +463,14 @@ def translate_markdown(md: str, cfg: dict) -> str:
         # Regular paragraph line → add indent
         indented.append('\u3000\u3000' + line)
     result = '\n'.join(indented)
+
+    # Add English title under the translated H1 for reference
+    if eng_title:
+        h1_match = re.match(r'^(#\s+.+)$', result, re.MULTILINE)
+        if h1_match:
+            old_h1 = h1_match.group(1)
+            new_h1 = f"{old_h1}\n\n> {eng_title}"
+            result = result.replace(old_h1, new_h1, 1)
 
     return result
 
@@ -617,6 +734,7 @@ def run_pipeline(source: str, title: str = None, skip_translate: bool = False,
 
     # Build title from source + original markdown content (before translation)
     title = format_title(source, md, title)
+    eng_title = extract_english_title(md)
     logger.info("  Title: %s", title)
 
     # Step 3: Translate
@@ -624,7 +742,7 @@ def run_pipeline(source: str, title: str = None, skip_translate: bool = False,
         logger.info("[3/5] Skipping translation")
     else:
         logger.info("[3/5] Translating to Chinese...")
-        md = translate_markdown(md, cfg)
+        md = translate_markdown(md, cfg, eng_title=eng_title)
 
     # Step 4: Upload images
     logger.info("[4/5] Uploading images to Yuque CDN...")
