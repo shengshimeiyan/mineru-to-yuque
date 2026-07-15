@@ -563,20 +563,18 @@ def format_title(source: str, md: str, user_title: str = None) -> str:
     
     PREFIX = Conference+Year (e.g. EMNLP24) or arXiv ID (e.g. 2410.01627).
     """
+    prefix = extract_paper_prefix(source)
+    eng_title = extract_english_title(md)
+    
     if user_title:
-        # User provided title — use as-is if it already has the prefix format
+        # User explicitly provided title
         if " | " in user_title:
             return user_title
-        # Otherwise, auto-add prefix
-        prefix = extract_paper_prefix(source)
         if prefix:
             return f"{prefix} | {user_title}"
         return user_title
     
-    # Auto-detect prefix and title from source + markdown
-    prefix = extract_paper_prefix(source)
-    eng_title = extract_english_title(md)
-    
+    # Auto-detect: use English title from markdown
     if prefix and eng_title:
         return f"{prefix} | {eng_title}"
     elif eng_title:
@@ -592,9 +590,6 @@ def run_pipeline(source: str, title: str = None, skip_translate: bool = False,
                  skip_publish: bool = False, env_path: str = ".env",
                  output_dir: str = "./output", update_slug: str = None):
     cfg = load_env(env_path)
-
-    if not title:
-        title = Path(source).stem if not source.startswith("http") else source.split("/")[-1]
 
     os.makedirs(output_dir, exist_ok=True)
     logger.info("=" * 50)
@@ -620,7 +615,7 @@ def run_pipeline(source: str, title: str = None, skip_translate: bool = False,
     md_dir = os.path.dirname(md_path)
     logger.info("  Markdown: %d chars, Images: %d", len(md), len(image_paths))
 
-    # Build title from source + markdown content
+    # Build title from source + original markdown content (before translation)
     title = format_title(source, md, title)
     logger.info("  Title: %s", title)
 
