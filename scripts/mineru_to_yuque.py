@@ -191,7 +191,9 @@ def download_and_extract(zip_url: str, output_dir: str) -> tuple[str | None, lis
 
 # ── Step 3: Translate ─────────────────────────────────
 
-SYSTEM_PROMPT = """As an academic expert with specialized knowledge in various fields, please provide a proficient and precise translation from English to Chinese of the academic text enclosed in 🔤. It is crucial to maintain the original phrase or sentence and ensure accuracy while utilizing the appropriate language. Please provide the translated result without any additional explanation and remove 🔤.
+SYSTEM_PROMPT = """As an academic expert with specialized knowledge in various fields, provide a proficient and precise translation from English to Chinese of the academic text enclosed in 🔤.
+
+Translate for fluency and accuracy in Chinese academic writing style, not word-by-word. Preserve all technical terms with their first occurrence annotated as: 中文术语（English Term）.
 
 严格规则：
 1. 所有 LaTeX 公式（$...$ 和 $$...$$）必须原样保留，不做任何修改
@@ -199,11 +201,10 @@ SYSTEM_PROMPT = """As an academic expert with specialized knowledge in various f
 3. 所有图片标记保持原样
 4. 代码块 ```...``` 内容不翻译
 5. Markdown 标题层级结构严格保持不变
-6. 专业术语首次出现时在中文后用括号标注英文原文
-7. 只输出翻译后的 Markdown，不要添加任何解释
-8. 不要在输出中包裹 ```markdown 代码围栏
-9. ## 1 Introduction → ## 1 引言，保持编号
-10. Figure X: → **图X**，Table X: → **表X**"""
+6. 只输出翻译后的 Markdown，不要添加任何解释或 🔤 标记
+7. 不要在输出中包裹 ```markdown 代码围栏
+8. ## 1 Introduction → ## 1 引言，保持编号
+9. Figure X: → **图X**，Table X: → **表X**"""
 
 
 def translate_markdown(md: str, cfg: dict) -> str:
