@@ -463,6 +463,83 @@ def publish_to_yuque(md_path: str, title: str, cfg: dict, update_slug: str = Non
 
 # ── Main Pipeline ──────────────────────────────────────
 
+def extract_paper_prefix(source: str) -> str:
+    """Extract conference+year or arXiv ID from URL/path.
+    
+    Formats:
+      - ACL Anthology: "EMNLP24", "ACL25", "NAACL24", "FINDINGS-EMNLP23", etc.
+      - arXiv: "2410.01627"
+      - Unknown: ""
+    """
+    # arXiv ID from URL or filename
+    arxiv_match = re.search(r'(\d{4}\.\d{4,5})', source)
+    if arxiv_match:
+        return arxiv_match.group(1)
+    
+    # ACL Anthology: https://aclanthology.org/2024.emnlp-industry.114/
+    # Format: YEAR.CONF[-VARIANT].ID
+    acl_match = re.search(r'aclanthology\.org/(\d{4})\.([a-z]+?)(?:-([a-z\d]+?))?\.(\d+)', source)
+    if acl_match:
+        year_short = acl_match.group(1)[2:]  # "2024" → "24"
+        conf = acl_match.group(2).upper()     # "emnlp" → "EMNLP"
+        variant = acl_match.group(3)          # "industry", "long", etc.
+        if variant:
+            # findings-emnlp → "FINDINGS-EMNLP23", emnlp-industry → "EMNLP-INDUSTRY24"
+            return f"{conf}-{variant.upper()}{year_short}"
+        return f"{conf}{year_short}"
+    
+    # ACL Anthology alternate format: /2026.customnlp4u-1.8/
+    # (conference name contains numbers/dots, different dot structure)
+    acl_match2 = re.search(r'aclanthology\.org/(\d{4})\.([a-z\d]+)-(\d+\.\d+)', source)
+    if acl_match2:
+        year_short = acl_match2.group(1)[2:]
+        conf = acl_match2.group(2).upper()
+        return f"{conf}{year_short}"
+    
+    return ""
+
+
+def extract_english_title(md: str) -> str:
+    """Extract the English title from MinerU markdown (first # heading)."""
+    m = re.search(r'^#\s+(.+)$', md, re.MULTILINE)
+    if m:
+        title = m.group(1).strip()
+        # Clean up common artifacts
+        title = re.sub(r'\s+', ' ', title)
+        return title
+    return ""
+
+
+def format_title(source: str, md: str, user_title: str = None) -> str:
+    """Build Yuque doc title in format: PREFIX | English Title.
+    
+    PREFIX = Conference+Year (e.g. EMNLP24) or arXiv ID (e.g. 2410.01627).
+    """
+    if user_title:
+        # User provided title — use as-is if it already has the prefix format
+        if " | " in user_title:
+            return user_title
+        # Otherwise, auto-add prefix
+        prefix = extract_paper_prefix(source)
+        if prefix:
+            return f"{prefix} | {user_title}"
+        return user_title
+    
+    # Auto-detect prefix and title from source + markdown
+    prefix = extract_paper_prefix(source)
+    eng_title = extract_english_title(md)
+    
+    if prefix and eng_title:
+        return f"{prefix} | {eng_title}"
+    elif eng_title:
+        return eng_title
+    elif prefix:
+        return prefix
+    else:
+        # Fallback: use filename
+        return Path(source).stem if not source.startswith("http") else source.split("/")[-1]
+
+
 def run_pipeline(source: str, title: str = None, skip_translate: bool = False,
                  skip_publish: bool = False, env_path: str = ".env",
                  output_dir: str = "./output", update_slug: str = None):
@@ -473,7 +550,7 @@ def run_pipeline(source: str, title: str = None, skip_translate: bool = False,
 
     os.makedirs(output_dir, exist_ok=True)
     logger.info("=" * 50)
-    logger.info("Pipeline: %s → Yuque", title)
+    logger.info("Pipeline: %s → Yuque", source[:60])
     logger.info("=" * 50)
 
     # Step 1: Submit to MinerU
@@ -494,6 +571,10 @@ def run_pipeline(source: str, title: str = None, skip_translate: bool = False,
     md = open(md_path, encoding="utf-8").read()
     md_dir = os.path.dirname(md_path)
     logger.info("  Markdown: %d chars, Images: %d", len(md), len(image_paths))
+
+    # Build title from source + markdown content
+    title = format_title(source, md, title)
+    logger.info("  Title: %s", title)
 
     # Step 3: Translate
     if skip_translate:
