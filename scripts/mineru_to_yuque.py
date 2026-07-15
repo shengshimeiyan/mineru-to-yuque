@@ -252,23 +252,22 @@ GLOSSARY = {
 
 GLOSSARY_PROMPT = "\n".join(f"- {k} → {v}" for k, v in GLOSSARY.items())
 
-SYSTEM_PROMPT = f"""As an academic expert with specialized knowledge in various fields, provide a proficient and precise translation from English to Chinese of the academic text enclosed in 🔤.
+SYSTEM_PROMPT = f"""You are a professional academic paper translator. Translate the following English academic text to Chinese.
 
-Translate for fluency and accuracy in Chinese academic writing style, not word-by-word. Preserve all technical terms with their first occurrence annotated as: 中文术语（English Term）.
+Rules:
+- Translate for fluency and accuracy in Chinese academic writing style, not word-by-word
+- Preserve all technical terms with their first occurrence annotated as: 中文术语（English Term）
+- All LaTeX formulas ($...$ and $$...$$) MUST be preserved exactly as-is
+- All HTML tables (<table>...</table>) MUST be preserved as-is, do NOT translate
+- All image markers must be preserved as-is
+- Code blocks (```...```) must NOT be translated
+- Markdown heading hierarchy must be preserved exactly
+- Output ONLY the translated Markdown, no explanations, no markdown code fences
+- ## 1 Introduction → ## 1 引言, keep numbering
+- Figure X: → **图X**, Table X: → **表X**
 
-Key terminology glossary (MUST follow these translations):
-{GLOSSARY_PROMPT}
-
-严格规则：
-1. 所有 LaTeX 公式（$...$ 和 $$...$$）必须原样保留，不做任何修改
-2. 所有 HTML 表格（<table>...</table>）不要翻译，原样保留
-3. 所有图片标记保持原样
-4. 代码块 ```...``` 内容不翻译
-5. Markdown 标题层级结构严格保持不变
-6. 只输出翻译后的 Markdown，不要添加任何解释或 🔤 标记
-7. 不要在输出中包裹 ```markdown 代码围栏
-8. ## 1 Introduction → ## 1 引言，保持编号
-9. Figure X: → **图X**，Table X: → **表X**"""
+Key terminology (MUST follow):
+{GLOSSARY_PROMPT}"""
 
 
 def translate_markdown(md: str, cfg: dict, eng_title: str = "") -> str:
@@ -325,9 +324,10 @@ def translate_markdown(md: str, cfg: dict, eng_title: str = "") -> str:
         """Translate a single chunk. Returns (idx, translated_text)."""
         # Use previous chunk's original text as context (not waiting for translation)
         prev_context = chunks[idx - 1][-200:] if idx > 0 else ""
-        user_msg = f"🔤 {chunk} 🔤"
         if prev_context:
-            user_msg = f"前文末尾（仅供上下文参考，不翻译）：---\n{prev_context}\n---\n\n请翻译：\n🔤 {chunk} 🔤"
+            user_msg = f"[Context for reference, do NOT translate this part]:\n{prev_context}\n\n[Translate the following]:\n{chunk}"
+        else:
+            user_msg = chunk
 
         # Retry up to 5 times with increasing timeout and backoff
         for attempt in range(5):
@@ -377,6 +377,12 @@ def translate_markdown(md: str, cfg: dict, eng_title: str = "") -> str:
 
     result = "\n\n".join(translated)
 
+    # Post-process: clean up LLM output artifacts
+    result = result.replace('🔤', '')                   # remove 🔤 markers
+    result = re.sub(r'^\s*---\s*$', '', result, flags=re.MULTILINE)  # remove standalone ---
+    result = re.sub(r'^```markdown\s*\n?', '', result, flags=re.MULTILINE)  # remove markdown fences
+    result = re.sub(r'\n{3,}', '\n\n', result)          # collapse excessive blank lines
+
     # Post-process: fix < and > inside formulas (Yuque HTML-escapes them)
     def _fix_formula_lt_gt(md: str) -> str:
         """Replace < with \\lt and > with \\gt inside $...$ and $$...$$."""
@@ -410,8 +416,7 @@ def translate_markdown(md: str, cfg: dict, eng_title: str = "") -> str:
     _fig_idx = [0]
     def _number_image(m):
         _fig_idx[0] += 1
-        return f'![图{_fig_idx[0]}]({m.group(2)})'
-    result = re.sub(r'!\[\]\(([^)]+)\)', r'![](\1)', result)  # normalize first
+        return f'![图{_fig_idx[0]}]({m.group(1)})'
     result = re.sub(r'!\[\]\(([^)]+)\)', _number_image, result)
     # Fix subsection headings: ## 2.1 → ### 2.1
     result = re.sub(r'^## (\d+\.\d+)', r'### \1', result, flags=re.MULTILINE)
