@@ -255,6 +255,9 @@ GLOSSARY_PROMPT = "\n".join(f"- {k} → {v}" for k, v in GLOSSARY.items())
 SYSTEM_PROMPT = f"""You are a professional academic paper translator. Translate the following English academic text to Chinese.
 
 Rules:
+- You MUST translate EVERY sentence in the input. Do NOT skip, summarize, or omit any content.
+- Each paragraph is prefixed with [PN] markers. You MUST produce exactly the same number of translated paragraphs with their [PN] markers preserved.
+- You MUST only translate what is given. Do NOT add, invent, or hallucinate any content that is not in the input.
 - Translate for fluency and accuracy in Chinese academic writing style, not word-by-word
 - Preserve all technical terms with their first occurrence annotated as: 中文术语（English Term）
 - All LaTeX formulas ($...$ and $$...$$) MUST be preserved exactly as-is
@@ -300,8 +303,8 @@ def translate_markdown(md: str, cfg: dict, eng_title: str = "") -> str:
             break
 
     # Chunk — split at heading boundaries first, then split oversized sections
-    max_chunk = 4000
-    min_chunk = 500  # merge small sections back together
+    max_chunk = 2500
+    min_chunk = 300  # merge small sections back together
 
     # Step 1: split at ## heading boundaries (keep heading with its content)
     raw_sections = re.split(r'(?=^## )', main_text, flags=re.MULTILINE)
@@ -327,6 +330,9 @@ def translate_markdown(md: str, cfg: dict, eng_title: str = "") -> str:
         if len(sec) <= max_chunk:
             chunks.append(sec)
         else:
+            # Extract the heading line for context
+            heading_match = re.match(r'^(#{1,6}\s+.+)\n', sec)
+            heading_line = heading_match.group(1) if heading_match else None
             # Split at \n\n within the section
             paragraphs = re.split(r'\n\n', sec)
             sub = ""
@@ -338,6 +344,13 @@ def translate_markdown(md: str, cfg: dict, eng_title: str = "") -> str:
                     sub = (sub + "\n\n" + para) if sub else para
             if sub:
                 chunks.append(sub)
+            # For sub-chunks that don't start with a heading, prepend the heading as context
+            if heading_line:
+                for ci in range(len(chunks)):
+                    # Find chunks from this section that lack a heading
+                    if not re.match(r'^#{1,6}\s', chunks[ci]) and ci > 0:
+                        # This is a continuation sub-chunk — prefix with heading context
+                        chunks[ci] = f"{heading_line}\n\n{chunks[ci]}"
 
     logger.info("Translating %d chunks...", len(chunks))
     for i, c in enumerate(chunks):
@@ -346,13 +359,30 @@ def translate_markdown(md: str, cfg: dict, eng_title: str = "") -> str:
 
     # Translate chunks with concurrency for speed
     # Each chunk carries ~200 chars of the PREVIOUS ORIGINAL (not translated) text as context
-    max_concurrent = min(4, len(chunks))  # up to 4 parallel requests
+    max_concurrent = 1  # Serial translation to prevent GLM from dropping paragraphs under concurrent load
     
     def _translate_chunk(idx: int, chunk: str) -> tuple[int, str]:
         """Translate a single chunk. Returns (idx, translated_text)."""
         # No context overlap — it causes heading duplication in parallel mode.
         # Instead, the system prompt handles coherence.
-        user_msg = chunk
+        
+        # Add paragraph numbers to prevent LLM from skipping paragraphs
+        para_count = 0
+        numbered_lines = []
+        for line in chunk.split('\n'):
+            # Only number non-empty, non-heading, non-image, non-table, non-formula lines
+            if (line.strip() 
+                and not re.match(r'^#{1,6}\s', line)
+                and not re.match(r'^!\[', line)
+                and not re.match(r'^<table', line)
+                and not re.match(r'^\$\$', line)
+                and not re.match(r'^```', line)):
+                para_count += 1
+                numbered_lines.append(f'[P{para_count}] {line}')
+            else:
+                numbered_lines.append(line)
+        
+        user_msg = '\n'.join(numbered_lines)
 
         # Retry up to 5 times with increasing timeout and backoff
         for attempt in range(5):
@@ -364,7 +394,7 @@ def translate_markdown(md: str, cfg: dict, eng_title: str = "") -> str:
                     json={
                         "model": cfg["llm_model"],
                         "messages": [
-                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "system", "content": SYSTEM_PROMPT + (f'\n\nYou are translating the paper: "{eng_title}". Only translate content from this paper.' if eng_title else '')},
                             {"role": "user", "content": user_msg},
                         ],
                         "max_tokens": 8192,
@@ -381,6 +411,8 @@ def translate_markdown(md: str, cfg: dict, eng_title: str = "") -> str:
                 resp.raise_for_status()
                 result = resp.json()
                 text = result["choices"][0]["message"]["content"]
+                # Strip paragraph number markers from LLM output
+                text = re.sub(r'\[P\d+\]\s*', '', text)
                 return (idx, text)
             except (httpx.ReadTimeout, httpx.ConnectTimeout) as e:
                 logger.warning("  Chunk %d attempt %d timed out (%ds): %s", idx + 1, attempt + 1, timeout, e)
