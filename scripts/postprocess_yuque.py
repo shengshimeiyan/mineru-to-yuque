@@ -340,11 +340,15 @@ def fix_heading_levels(text):
             level = dot_count + 1  # 1→#, 1.1→##, 1.1.1→###
             return '#' * min(level, 6) + ' ' + title
         
-        # Appendix letter: "A 附录" → #, "A.1 ..." → ##
+        # Appendix letter: "A 大语言模型的使用" → #, "A.1 ..." → ##
         if re.match(r'^A\s+附录', title) or re.match(r'^A\s*$', title):
             return '# ' + title
         if re.match(r'^[A-Z]\.\d+', title):
             return '## ' + title
+        # Standalone appendix letter + title: "A 大语言模型的使用", "B 评估详情", etc.
+        if re.match(r'^[A-Z]\s+\S', title) and not re.match(r'^[A-Z]\.\d+', title):
+            # This is an appendix section (like \section{A ...})
+            return '# ' + title
         
         # Unnumbered H1 keywords
         # Check if the title starts with any of the H1 keywords
@@ -537,6 +541,22 @@ def clean_inline_footnotes(text):
     
     return text
 
+# ── Step 5.5: Fix display formula boundaries ────────────────────
+# MinerU sometimes merges body text into $$ blocks:
+#   $$formula\n$$正文被混入$$ → should be $$formula$$\n\n正文
+# Pattern: closing $$ followed by CJK text on the same line
+def fix_formula_boundaries(text):
+    # Pattern: "$$\n正文" where the closing $$ is on its own line but
+    # immediately followed by CJK body text (should be separated)
+    # e.g., "$$formula\n$$模型不确定F1..." → "$$formula$$\n\n模型不确定F1..."
+    text = re.sub(r'\$\$\n(\$\$)([\u4e00-\u9fff])', r'$$\n\n\2', text)
+    
+    # Pattern: "$$公式\n$$正文" — closing $$ at start of line with CJK body after it
+    # This happens when MinerU puts $$ + body text on the same line
+    text = re.sub(r'\n\$\$([\u4e00-\u9fff])', r'\n$$\n\n\1', text)
+    
+    return text
+
 
 # ── Step 6.5: Split inline section markers ─────────────────────
 # MinerU sometimes renders section markers like "贡献。" inline with body text.
@@ -566,16 +586,18 @@ def clean_artifacts(text):
     # Also handle: "## X\n\n。 对于..." → "## X\n\n对于..."
     text = re.sub(r'(\n#[^\n]+\n\n)\s*。\s*', r'\1', text)
     
-    # Remove references section entirely (per project rule: "参考文献可以直接去掉")
-    # Find "# 参考文献" heading and remove everything until the next H1 or end of document
+    # Remove references section (per project rule: "参考文献可以直接去掉")
+    # BUT keep appendices that come after references — only remove the references section itself.
+    # Find "# 参考文献" heading and remove until the next section-level heading (H1 or appendix).
     ref_match = re.search(r'^#\s+参考文献\s*\n', text, re.MULTILINE)
     if ref_match:
-        # Find the next H1 heading after references (e.g., Appendix)
         after_ref = text[ref_match.end():]
+        # Find the next H1 heading (including appendix like "# A ...")
         next_h1 = re.search(r'^#\s+', after_ref, re.MULTILINE)
         if next_h1:
             text = text[:ref_match.start()] + after_ref[next_h1.start():]
         else:
+            # No more sections after references — remove to end
             text = text[:ref_match.start()]
     
     # Collapse excessive blank lines
@@ -643,6 +665,7 @@ text = split_heading_body(text)
 text = fix_heading_levels(text)
 text = merge_broken_paragraphs(text)
 text = fix_broken_urls(text)
+text = fix_formula_boundaries(text)
 text = clean_inline_footnotes(text)
 text = split_inline_markers(text)
 text = clean_artifacts(text)
